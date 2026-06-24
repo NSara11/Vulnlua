@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payrolltrack
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payrolltrack
+  template:
+    metadata:
+      labels:
+        app: payrolltrack
+    spec:
+      # No Pod Security Policy / PodSecurityContext enforcing non-root
+      hostNetwork: true           # shares host network namespace
+      hostPID: true               # shares host PID namespace
+      hostIPC: true               # shares host IPC namespace
+
+      containers:
+        - name: payrolltrack
+          image: payrolltrack/app:latest     # mutable latest tag — not pinned
+          imagePullPolicy: Always
+
+          securityContext:
+            privileged: true                  # full host access
+            runAsUser: 0                      # runs as root
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: false
+            capabilities:
+              add:
+                - ALL                         # all Linux capabilities granted
+
+          # No resource limits — can exhaust node resources
+          # resources: {}
+
+          ports:
+            - containerPort: 5000
+            - containerPort: 8080
+            - containerPort: 22              # SSH exposed inside cluster
+
+          # Secrets in environment variables — visible in 'kubectl describe pod'
+          env:
+            - name: SECRET_KEY
+              value: "django-insecure-payrolltrack-2024"
+            - name: DATABASE_URL
+              value: "postgresql://payroll_admin:Tr0ub4dor&3@postgres-svc:5432/payroll_prod"
+            - name: AWS_ACCESS_KEY_ID
+              value: "AKIAIOSFODNN7EXAMPLE3"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+            - name: STRIPE_SECRET_KEY
+              value: "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
+            - name: SENDGRID_API_KEY
+              value: "SG.payrolltrack_prod.AAAAAABBBBBBBCCCCCCCDDDDDDDEEEEEEE"
+            - name: DEBUG
+              value: "true"
+
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock   # Docker socket mounted inside container
+            - name: host-root
+              mountPath: /host                  # full host filesystem mounted
+            - name: payroll-data
+              mountPath: /var/payroll
+
+          livenessProbe:
+            httpGet:
+              path: /admin/debug               # health check hits the secret-leaking endpoint
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: host-root
+          hostPath:
+            path: /                            # full host root mounted
+        - name: payroll-data
+          hostPath:
+            path: /var/payroll
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payrolltrack-svc
+spec:
+  type: LoadBalancer               # exposes service directly to internet
+  selector:
+    app: payrolltrack
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+    - name: debug
+      port: 8080
+      targetPort: 8080
+    - name: ssh
+      port: 22
+      targetPort: 22
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payrolltrack-sa
+  namespace: default
+  annotations:
+    # Overly permissive RBAC bound to this service account (see ClusterRoleBinding below)
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: payrolltrack-admin
+subjects:
+  - kind: ServiceAccount
+    name: payrolltrack-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin              # grants cluster-admin to the app service account
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# No NetworkPolicy defined — all pods can communicate with all other pods
+# No PodDisruptionBudget
+# No HorizontalPodAutoscaler with memory limits
