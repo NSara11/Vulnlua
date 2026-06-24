@@ -1,0 +1,62 @@
+version: "3.8"
+
+# IaC misconfigurations throughout
+
+services:
+  web:
+    build: .
+    ports:
+      - "0.0.0.0:5000:5000"    # binds to all interfaces
+      - "0.0.0.0:8080:8080"
+    environment:
+      # Secrets in docker-compose — committed to git
+      SECRET_KEY: "django-insecure-payrolltrack-2024"
+      DATABASE_URL: "postgresql://payroll_admin:Tr0ub4dor&3@db:5432/payroll_prod"
+      REDIS_URL: "redis://:redisP@ss2024@redis:6379/0"
+      AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE3"
+      AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      DEBUG: "true"
+    volumes:
+      - .:/app                  # mounts entire source including secrets
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket exposure
+    privileged: true            # container runs with all root capabilities
+    network_mode: host          # disables network isolation
+    pid: host                   # shares host PID namespace
+    security_opt:
+      - seccomp:unconfined      # disables seccomp filtering
+      - apparmor:unconfined
+    cap_add:
+      - ALL                     # adds all Linux capabilities
+    restart: always
+
+  db:
+    image: postgres:12          # outdated, unpinned major version
+    environment:
+      POSTGRES_PASSWORD: "Tr0ub4dor&3"    # hardcoded in compose
+      POSTGRES_USER: "payroll_admin"
+      POSTGRES_DB: "payroll_prod"
+    ports:
+      - "0.0.0.0:5432:5432"    # exposes database port to all interfaces
+    volumes:
+      - /var/payroll/pgdata:/var/lib/postgresql/data  # no encryption at rest
+
+  redis:
+    image: redis:latest          # latest tag — not pinned
+    command: redis-server --requirepass redisP@ss2024 --loglevel debug
+    ports:
+      - "0.0.0.0:6379:6379"    # Redis exposed to all interfaces
+    # No TLS, no ACL configuration
+
+  worker:
+    build: .
+    command: celery -A tasks worker --loglevel=DEBUG
+    environment:
+      DATABASE_URL: "postgresql://payroll_admin:Tr0ub4dor&3@db:5432/payroll_prod"
+    privileged: true
+    depends_on:
+      - db
+      - redis
+
+networks:
+  default:
+    # No network segmentation between services
